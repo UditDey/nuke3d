@@ -1,4 +1,5 @@
 use std::ffi::CStr;
+use std::borrow::Cow;
 use std::os::raw::c_char;
 
 use erupt::{vk, InstanceLoader};
@@ -12,9 +13,27 @@ pub const DEVICE_EXTS: [*const c_char; 2] = [
 ];
 
 pub struct PhysicalDeviceInfo {
-    pub gfx_queue_family: u32,
-    pub props: vk::PhysicalDeviceProperties,
-    pub mem_props: vk::PhysicalDeviceMemoryProperties
+    gfx_queue_family: u32,
+    props: vk::PhysicalDeviceProperties,
+    mem_props: vk::PhysicalDeviceMemoryProperties
+}
+
+impl PhysicalDeviceInfo {
+    pub fn gfx_queue_family(&self) -> u32 {
+        self.gfx_queue_family
+    }
+
+    pub fn device_name(&self) -> Cow<str> {
+        unsafe { CStr::from_ptr(self.props.device_name.as_ptr()).to_string_lossy() }
+    }
+
+    pub fn props(&self) -> &vk::PhysicalDeviceProperties {
+        &self.props
+    }
+
+    pub fn mem_props(&self) -> &vk::PhysicalDeviceMemoryProperties {
+        &self.mem_props
+    }
 }
 
 pub fn pick_physical_device(

@@ -1,13 +1,12 @@
-use std::ffi::CStr;
-
 use erupt::{vk, EntryLoader, InstanceLoader, DeviceLoader};
 use anyhow::{Result, Context};
+use piet_gpu::PietGpuRenderContext;
 
 use crate::{
     vk_util::{
         create_instance, create_surface, pick_physical_device,
-        create_device, MSAALevel, create_render_pass, FrameQueue,
-        create_command_buffers, VkAllocator
+        create_device, MSAALevel, create_render_pass, FrameQueue, FrameInfo,
+        create_command_buffers, VkAllocator, create_image_barrier
     },
     platform::WindowInfo,
     nkgui::NkGuiRenderer
@@ -24,22 +23,18 @@ pub struct Renderer {
     device: DeviceLoader,
     surface: vk::SurfaceKHR,
     instance: InstanceLoader,
-    entry: EntryLoader
+    _entry: EntryLoader
 }
 
 impl Renderer {
     pub fn new(window_info: &WindowInfo) -> Result<Self> {
-        // Create Vulkan objects
         let entry = EntryLoader::new().context("Failed to load the Vulkan library")?;
         
         let instance = create_instance(&entry)?;
         let surface = create_surface(&instance, &window_info)?;
         let (phys_dev, phys_dev_info) = pick_physical_device(&instance, surface)?;
 
-        println!(
-            "Using device: {}",
-            unsafe { CStr::from_ptr(phys_dev_info.props.device_name.as_ptr()) }.to_string_lossy()
-        );
+        println!("Using device: {}", phys_dev_info.device_name());
 
         let (device, gfx_queue) = create_device(&instance, phys_dev, &phys_dev_info)?;
 
@@ -66,14 +61,12 @@ impl Renderer {
         let nkgui = NkGuiRenderer::new(
             &device,
             &phys_dev_info,
-            &mut vk_alloc,
-            frame_queue.len()
+            frame_queue.swap_image_extent(),
+            frame_queue.len(),
+            cmd_bufs[0],
+            gfx_queue,
+            &mut vk_alloc
         ).context("Failed to create NkGuiRenderer")?;
-
-        // We pre-record all command buffers
-        for (&cmd_buf, &swap_image) in cmd_bufs.iter().zip(&frame_queue.swap_images) {
-            record_cmd_buf(&device, cmd_buf, swap_image)?;
-        }
 
         Ok(Self {
             nkgui,
@@ -86,17 +79,22 @@ impl Renderer {
             device,
             surface,
             instance,
-            entry
+            _entry: entry
         })
     }
 
     pub fn render(&mut self) -> Result<()> {
+        // Acquire next frame
         let frame_info = self.frame_queue.next_frame(&self.device)?;
+        let cmd_buf = self.cmd_bufs[frame_info.idx()];
+
+        // Record commands
+        record_cmds(&self.device, &mut self.nkgui, cmd_buf, &frame_info)?;
         
         // Submit command buffer
-        let wait_semaphores = [frame_info.sync_set.swap_image_avail];
-        let cmd_bufs = [self.cmd_bufs[frame_info.index]];
-        let signal_semaphores = [frame_info.sync_set.render_finished];
+        let wait_semaphores = [frame_info.swap_image_avail()];
+        let cmd_bufs = [cmd_buf];
+        let signal_semaphores = [frame_info.render_finished()];
 
         let submit_info = vk::SubmitInfoBuilder::new()
             .wait_semaphores(&wait_semaphores)
@@ -108,16 +106,16 @@ impl Renderer {
             self.device.queue_submit(
                 self.gfx_queue,
                 &[submit_info],
-                frame_info.sync_set.full_frame_finished
+                frame_info.full_frame_finished()
             )
             .result()
             .context("Failed to submit command buffer")?;
         }
 
         // Present image
-        let wait_semaphores = [frame_info.sync_set.render_finished];
-        let swapchains = [frame_info.swapchain];
-        let image_indices = [frame_info.index as u32];
+        let wait_semaphores = [frame_info.render_finished()];
+        let swapchains = [frame_info.swapchain()];
+        let image_indices = [frame_info.idx() as u32];
 
         let present_info = vk::PresentInfoKHRBuilder::new()
             .wait_semaphores(&wait_semaphores)
@@ -139,6 +137,7 @@ impl Renderer {
             self.nkgui.destroy(&self.device, &mut self.vk_alloc);
             self.device.destroy_command_pool(self.cmd_pool, None);
             self.frame_queue.destroy(&self.device, &mut self.vk_alloc);
+            self.vk_alloc.destroy(&self.device);
             self.device.destroy_render_pass(self.render_pass, None);
             self.device.destroy_device(None);
             self.instance.destroy_surface_khr(self.surface, None);
@@ -147,7 +146,12 @@ impl Renderer {
     }
 }
 
-fn record_cmd_buf(device: &DeviceLoader, cmd_buf: vk::CommandBuffer, swap_image: vk::Image) -> Result<()> {
+fn record_cmds(
+    device: &DeviceLoader,
+    nkgui: &mut NkGuiRenderer,
+    cmd_buf: vk::CommandBuffer,
+    frame_info: &FrameInfo
+) -> Result<()> {
     unsafe {
         // Begin command buffer recording
         let cmd_buf_begin_info = vk::CommandBufferBeginInfoBuilder::new();
@@ -156,22 +160,19 @@ fn record_cmd_buf(device: &DeviceLoader, cmd_buf: vk::CommandBuffer, swap_image:
             .result()
             .context("Failed to start command buffer recording")?;
 
-        // Transition swap image to GENERAL for nkgui compute work
-        let barrier = vk::ImageMemoryBarrierBuilder::new()
-            .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags::MEMORY_READ)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(swap_image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: vk::REMAINING_MIP_LEVELS,
-                base_array_layer: 0,
-                layer_count: vk::REMAINING_ARRAY_LAYERS
-            });
+        // nkgui commands
+        let mut ctx = PietGpuRenderContext::new();
+
+        nkgui_test(&mut ctx);
+        nkgui.cmd_render(device, cmd_buf, &mut ctx, frame_info.idx())?;
+
+        // Blit nkgui render image to swap image
+        // Transition swap image to TRANSFER_DST_OPTIMAL for blit
+        let barrier = create_image_barrier(
+            frame_info.swap_image(),
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL
+        );
 
         device.cmd_pipeline_barrier(
             cmd_buf,
@@ -182,13 +183,54 @@ fn record_cmd_buf(device: &DeviceLoader, cmd_buf: vk::CommandBuffer, swap_image:
             &[],
             &[barrier]
         );
+        
+        // Blitting
+        let blit_region = vk::ImageBlitBuilder::new()
+            .src_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1
+            })
+            .src_offsets([
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: nkgui.render_image_extent().width as i32,
+                    y: nkgui.render_image_extent().height as i32,
+                    z: 1
+                }
+            ])
+            .dst_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1
+            })
+            .dst_offsets([
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: frame_info.swap_image_extent().width as i32,
+                    y: frame_info.swap_image_extent().height as i32,
+                    z: 1
+                }
+            ]);
 
-        // nkgui commands
+        device.cmd_blit_image(
+            cmd_buf,
+            nkgui.render_image(frame_info.idx()),
+            vk::ImageLayout::GENERAL,
+            frame_info.swap_image(),
+            vk::ImageLayout::GENERAL,
+            &[blit_region],
+            vk::Filter::LINEAR
+        );
 
         // Transition swap image to PRESENT_SRC_KHR for presentation
-        let barrier = barrier
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        let barrier = create_image_barrier(
+            frame_info.swap_image(),
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::PRESENT_SRC_KHR
+        );
 
         device.cmd_pipeline_barrier(
             cmd_buf,
@@ -207,4 +249,46 @@ fn record_cmd_buf(device: &DeviceLoader, cmd_buf: vk::CommandBuffer, swap_image:
 
         Ok(())
     }
+}
+
+use piet::{
+    RenderContext, kurbo::{Circle, Point, Rect},
+    Color, FixedGradient, FixedRadialGradient, GradientStop, Text, TextAttribute, TextLayoutBuilder,
+};
+
+fn nkgui_test(rc: &mut impl RenderContext) {
+    rc.fill(
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        &Color::rgb8(0xBB, 0x2B, 0x68),
+    );
+
+    rc.fill(
+        Rect::new(100.0, 0.0, 200.0, 100.0),
+        &Color::rgb8(0x0A, 0x26, 0xA0),
+    );
+
+    rc.fill(
+        Rect::new(200.0, 0.0, 300.0, 100.0),
+        &Color::rgb8(0x0A, 0xBA, 0x5E),
+    );
+
+    rc.fill(
+        Rect::new(300.0, 0.0, 400.0, 100.0),
+        &Color::rgb8(0x3E, 0xC6, 0xE4),
+    );
+
+    let text_size = 50.0;
+
+    rc.save().unwrap();
+    //rc.transform(Affine::new([0.2, 0.0, 0.0, -0.2, 200.0, 800.0]));
+    let layout = rc
+        .text()
+        .new_text_layout("Text working??")
+        .default_attribute(TextAttribute::FontSize(text_size))
+        .build()
+        .unwrap();
+
+    rc.draw_text(&layout, Point::new(110.0, 600.0));
+    rc.draw_text(&layout, Point::new(210.0, 700.0));
+    rc.restore().unwrap();
 }

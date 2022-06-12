@@ -9,12 +9,17 @@ pub fn create_pipeline_layout(
     set_layouts: &[vk::DescriptorSetLayout],
     push_const_size: usize
 ) -> Result<vk::PipelineLayout> {
-    let push_const_ranges = [
-        vk::PushConstantRangeBuilder::new()
+    let push_const_ranges = if push_const_size != 0 {
+        let range = vk::PushConstantRangeBuilder::new()
             .stage_flags(stage_flags)
             .offset(0)
-            .size(push_const_size as u32)
-    ];
+            .size(push_const_size as u32);
+
+        vec![range]
+    }
+    else {
+        vec![]
+    };
 
     let create_info = vk::PipelineLayoutCreateInfoBuilder::new()
         .set_layouts(set_layouts)
@@ -56,7 +61,7 @@ pub fn create_compute_pipelines<const L: usize>(
                 pipelines
                     .into_boxed_slice()
                     .try_into() // Convert our [vk::Pipeline] into [vk::Pipeline; L]
-                    .unwrap() // Should never fail, why would vulkan give us an incorrect number of pipelines
+                    .unwrap() // Should never fail, why would we have an incorrect number of pipelines
             })
     }
 }

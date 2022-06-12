@@ -5,8 +5,7 @@ use anyhow::{Result, Context};
 
 use super::{
     SURFACE_FORMAT, VkAllocator, MSAALevel, ImageType,
-    create_image_views, FramebufferSet,
-    name_object, name_multiple
+    create_image_views, FramebufferSet, name_multiple
 };
 
 use crate::platform::{self, WindowInfo};
@@ -14,23 +13,59 @@ use crate::platform::{self, WindowInfo};
 const MAX_QUEUED_FRAMES: u32 = 3;
 
 pub struct SyncSet {
-    pub swap_image_avail: vk::Semaphore,
-    pub render_finished: vk::Semaphore,
-    pub full_frame_finished: vk::Fence
+    swap_image_avail: vk::Semaphore,
+    render_finished: vk::Semaphore,
+    full_frame_finished: vk::Fence
 }
 
 pub struct FrameInfo<'a> {
-    pub swapchain: vk::SwapchainKHR,
-    pub framebuf: vk::Framebuffer,
-    pub index: usize,
-    pub sync_set: &'a SyncSet
+    swapchain: vk::SwapchainKHR,
+    swap_image: vk::Image,
+    swap_image_extent: vk::Extent2D,
+    framebuf: vk::Framebuffer,
+    idx: usize,
+    sync_set: &'a SyncSet
+}
+
+impl<'a> FrameInfo<'a> {
+    pub fn swapchain(&self) -> vk::SwapchainKHR {
+        self.swapchain
+    }
+
+    pub fn swap_image(&self) -> vk::Image {
+        self.swap_image
+    }
+
+    pub fn swap_image_extent(&self) -> &vk::Extent2D {
+        &self.swap_image_extent
+    }
+
+    pub fn framebuf(&self) -> vk::Framebuffer {
+        self.framebuf
+    }
+
+    pub fn idx(&self) -> usize {
+        self.idx
+    }
+
+    pub fn swap_image_avail(&self) -> vk::Semaphore {
+        self.sync_set.swap_image_avail
+    }
+
+    pub fn render_finished(&self) -> vk::Semaphore {
+        self.sync_set.render_finished
+    }
+
+    pub fn full_frame_finished(&self) -> vk::Fence {
+        self.sync_set.full_frame_finished
+    }
 }
 
 pub struct FrameQueue {
     swapchain: vk::SwapchainKHR,
-    pub swap_images: Vec<vk::Image>,
+    swap_images: Vec<vk::Image>,
     swap_views: Vec<vk::ImageView>,
-    pub swap_image_extent: vk::Extent2D,
+    swap_image_extent: vk::Extent2D,
     framebuf_set: FramebufferSet,
     sync_sets: Vec<SyncSet>,
     frame_index: usize
@@ -103,14 +138,14 @@ impl FrameQueue {
             .context("Failed to get swapchain images")?
             .to_vec();
 
-        name_multiple!(device, swap_images, vk::ObjectType::IMAGE, "Swapchain image");
+        name_multiple!(device, swap_images.iter(), vk::ObjectType::IMAGE, "swap_image");
 
         let queue_len = swap_images.len();
 
         // Create swap image views
         let swap_views = create_image_views(device, ImageType::SwapchainImage, &swap_images)?;
 
-        name_multiple!(device, swap_views, vk::ObjectType::IMAGE_VIEW, "Swapchain image view");
+        name_multiple!(device, swap_views.iter(), vk::ObjectType::IMAGE_VIEW, "swap_view");
 
         // Create framebuffers
         let framebuf_set = FramebufferSet::new(
@@ -124,7 +159,7 @@ impl FrameQueue {
 
         // Create sync sets
         let sync_sets = (0..queue_len)
-            .map(|i| {
+            .map(|_| {
                 let semaphore_create_info = vk::SemaphoreCreateInfoBuilder::new();
 
                 let fence_create_info = vk::FenceCreateInfoBuilder::new()
@@ -134,34 +169,13 @@ impl FrameQueue {
                     .result()
                     .context("Failed to create swap_image_avail")?;
 
-                name_object(
-                    device,
-                    vk::ObjectType::SEMAPHORE,
-                    swap_image_avail.object_handle(),
-                    &format!("swap_image_avail {i}")
-                )?;
-
                 let render_finished = unsafe { device.create_semaphore(&semaphore_create_info, None) }
                     .result()
                     .context("Failed to create render_finished")?;
 
-                name_object(
-                    device,
-                    vk::ObjectType::SEMAPHORE,
-                    render_finished.object_handle(),
-                    &format!("render_finished {i}")
-                )?;
-
                 let full_frame_finished = unsafe { device.create_fence(&fence_create_info, None) }
                     .result()
                     .context("Failed to create full_frame_finished")?;
-
-                name_object(
-                    device,
-                    vk::ObjectType::FENCE,
-                    full_frame_finished.object_handle(),
-                    &format!("full_frame_finished {i}")
-                )?;
 
                 Ok(SyncSet {
                     swap_image_avail,
@@ -171,6 +185,27 @@ impl FrameQueue {
             })
             .collect::<Result<Vec<SyncSet>>>()
             .context("Failed to create sync sets")?;
+
+        name_multiple!(
+            device,
+            sync_sets.iter().map(|set| set.swap_image_avail),
+            vk::ObjectType::SEMAPHORE,
+            "swap_image_avail"
+        );
+
+        name_multiple!(
+            device,
+            sync_sets.iter().map(|set| set.render_finished),
+            vk::ObjectType::SEMAPHORE,
+            "render_finished"
+        );
+
+        name_multiple!(
+            device,
+            sync_sets.iter().map(|set| set.full_frame_finished),
+            vk::ObjectType::FENCE,
+            "full_frame_finished"
+        );
 
         Ok(Self {
             swapchain,
@@ -183,8 +218,16 @@ impl FrameQueue {
         })
     }
 
+    pub fn swap_image_extent(&self) -> vk::Extent2D {
+        self.swap_image_extent.clone()
+    }
+
+    pub fn swap_image_views(&self) -> &[vk::ImageView] {
+        self.swap_views.as_slice()
+    }
+
     pub fn len(&self) -> usize {
-        self.swap_views.len()
+        self.swap_images.len()
     }
 
     pub fn next_frame(&mut self, device: &DeviceLoader) -> Result<FrameInfo> {
@@ -213,8 +256,10 @@ impl FrameQueue {
 
         let frame = FrameInfo {
             swapchain: self.swapchain,
-            framebuf: self.framebuf_set.framebufs[self.frame_index],
-            index: self.frame_index,
+            swap_image: self.swap_images[self.frame_index],
+            swap_image_extent: self.swap_image_extent.clone(),
+            framebuf: self.framebuf_set.framebufs()[self.frame_index],
+            idx: self.frame_index,
             sync_set
         };
 
@@ -223,19 +268,21 @@ impl FrameQueue {
         Ok(frame)
     }
 
-    pub unsafe fn destroy(self, device: &DeviceLoader, vk_alloc: &mut VkAllocator) {
-        device.destroy_swapchain_khr(self.swapchain, None);
+    pub fn destroy(self, device: &DeviceLoader, vk_alloc: &mut VkAllocator) {
+        unsafe{
+            device.destroy_swapchain_khr(self.swapchain, None);
         
-        for &view in &self.swap_views {
-            device.destroy_image_view(view, None);
-        }
+            for &view in &self.swap_views {
+                device.destroy_image_view(view, None);
+            }
 
-        self.framebuf_set.destroy(device, vk_alloc);
-        
-        for set in &self.sync_sets {
-            device.destroy_semaphore(set.swap_image_avail, None);
-            device.destroy_semaphore(set.render_finished, None);
-            device.destroy_fence(set.full_frame_finished, None);
+            self.framebuf_set.destroy(device, vk_alloc);
+            
+            for set in &self.sync_sets {
+                device.destroy_semaphore(set.swap_image_avail, None);
+                device.destroy_semaphore(set.render_finished, None);
+                device.destroy_fence(set.full_frame_finished, None);
+            }
         }
     }
 }

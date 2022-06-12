@@ -1,7 +1,7 @@
 use erupt::{vk, DeviceLoader};
 use anyhow::{Result, Context};
 
-use super::{RENDER_FORMAT, DEPTH_FORMAT};
+use super::{name_object, RENDER_FORMAT, DEPTH_FORMAT};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum MSAALevel {
@@ -138,7 +138,11 @@ pub fn create_render_pass(device: &DeviceLoader, msaa_level: MSAALevel) -> Resul
         .subpasses(&subpasses)
         .dependencies(&dependencies);
 
-    unsafe { device.create_render_pass(&create_info, None) }
+    let render_pass = unsafe { device.create_render_pass(&create_info, None) }
         .result()
-        .context("Failed to create render pass")
+        .context("Failed to create render pass")?;
+
+    name_object(device, render_pass.object_handle(), vk::ObjectType::RENDER_PASS, "render_pass")?;
+
+    Ok(render_pass)
 }

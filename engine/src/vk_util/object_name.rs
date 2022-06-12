@@ -5,21 +5,21 @@ use anyhow::{Result, Context};
 
 pub fn name_object(
     device: &DeviceLoader,
-    obj_type: vk::ObjectType,
     obj_handle: u64,
+    obj_type: vk::ObjectType,
     name: &str
 ) -> Result<()> {
     if cfg!(debug_assertions) {
-        let name = CString::new(name).unwrap();
+        let c_name = CString::new(name).unwrap();
 
         let name_info = vk::DebugUtilsObjectNameInfoEXTBuilder::new()
             .object_type(obj_type)
             .object_handle(obj_handle)
-            .object_name(&name);
+            .object_name(&c_name);
 
         unsafe { device.set_debug_utils_object_name_ext(&name_info) }
             .result()
-            .context("Failed to set object name")
+            .context(format!("Failed to set object name \"{name}\""))
     }
     else {
         Ok(())
@@ -27,14 +27,14 @@ pub fn name_object(
 }
 
 macro_rules! name_multiple {
-    ($device:expr, $objects:expr, $object_type:expr, $name:literal) => {
-        for (i, obj) in $objects.iter().enumerate() {
+    ($device:expr, $objects_iter:expr, $object_type:expr, $name:literal) => {
+        for (i, obj) in $objects_iter.enumerate() {
             use crate::vk_util::name_object;
 
             name_object(
                 $device,
-                $object_type,
                 obj.object_handle(),
+                $object_type,
                 &format!(concat!($name, " {}"), i)
             )?;
         }

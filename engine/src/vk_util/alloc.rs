@@ -8,7 +8,6 @@ use super::PhysicalDeviceInfo;
 
 const MIN_DEVICE_VK_MEM_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
 const MIN_HOST_VK_MEM_SIZE: u64 = 4 * 1024 * 1024; // 4 MiB
-const MIN_CROSS_VK_MEM_SIZE: u64 = MIN_HOST_VK_MEM_SIZE;
 
 fn padding(addr: u64, alignment: u64) -> u64 {
     if alignment != 0 {
@@ -20,15 +19,14 @@ fn padding(addr: u64, alignment: u64) -> u64 {
 }
 
 pub struct MemoryRegion {
-    pub offset: u64,
-    pub size: u64
+    offset: u64,
+    size: u64
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum MemoryType {
     Device,
-    Host,
-    Cross
+    Host
 }
 
 struct BlockSource {
@@ -37,10 +35,24 @@ struct BlockSource {
 }
 
 pub struct MemoryBlock {
-    pub mem: vk::DeviceMemory,
-    pub region: MemoryRegion,
-    pub ptr: Option<NonNull<ffi::c_void>>,
+    mem: vk::DeviceMemory,
+    region: MemoryRegion,
+    ptr: Option<NonNull<ffi::c_void>>,
     source: BlockSource
+}
+
+impl MemoryBlock {
+    pub fn mem(&self) -> vk::DeviceMemory {
+        self.mem
+    }
+
+    pub fn ptr(&self) -> Option<NonNull<ffi::c_void>> {
+        self.ptr
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.region.offset
+    }
 }
 
 struct VkMemory {
@@ -50,7 +62,7 @@ struct VkMemory {
 }
 
 impl VkMemory {
-    pub fn alloc(
+    fn alloc(
         &mut self,
         req: &vk::MemoryRequirements,
         mem_type: MemoryType,
@@ -104,7 +116,7 @@ impl VkMemory {
         block
     }
 
-    pub fn free(&mut self, returning_region: MemoryRegion) {
+    fn free(&mut self, returning_region: MemoryRegion) {
         let end_addr = returning_region.offset + returning_region.size;
 
         // Find first free region thats located after the returning region
@@ -143,7 +155,7 @@ struct VkMemoryManager {
 }
 
 impl VkMemoryManager {
-    pub fn alloc(&mut self, device: &DeviceLoader, req: &vk::MemoryRequirements) -> Result<MemoryBlock> {
+    fn alloc(&mut self, device: &DeviceLoader, req: &vk::MemoryRequirements) -> Result<MemoryBlock> {
         // Try allocating in each VkMemory
         let block = self.vk_mems
             .iter_mut()
@@ -203,20 +215,25 @@ impl VkMemoryManager {
         }
     }
 
-    pub fn free(&mut self, block: MemoryBlock) {
+    fn free(&mut self, block: MemoryBlock) {
         self.vk_mems[block.source.idx].free(block.region)
+    }
+
+    fn destroy(self, device: &DeviceLoader) {
+        for vk_mem in self.vk_mems {
+            unsafe { device.free_memory(vk_mem.mem, None); }
+        }
     }
 }
 
 pub struct VkAllocator {
     device_mgr: VkMemoryManager,
-    host_mgr: VkMemoryManager,
-    cross_mgr: VkMemoryManager
+    host_mgr: VkMemoryManager
 }
 
 impl VkAllocator {
     pub fn new(phys_dev_info: &PhysicalDeviceInfo) -> Result<Self> {
-        let mem_props = &phys_dev_info.mem_props;
+        let mem_props = phys_dev_info.mem_props();
         let mem_types = &mem_props.memory_types[..mem_props.memory_type_count as usize];
 
         // Find memory type indices
@@ -236,13 +253,6 @@ impl VkAllocator {
             vk::MemoryPropertyFlags::HOST_COHERENT
         ).context("Failed to find host memory type")?;
 
-        let cross_mem_type_idx = find_memory(
-            vk::MemoryPropertyFlags::HOST_VISIBLE |
-            vk::MemoryPropertyFlags::HOST_COHERENT |
-            vk::MemoryPropertyFlags::DEVICE_LOCAL
-        ).context("Failed to find cross memory type")?;
-
-
         // Create the memory type managers
         let device_mgr = VkMemoryManager {
             mem_type: MemoryType::Device,
@@ -260,18 +270,9 @@ impl VkAllocator {
             vk_mems: vec![]
         };
 
-        let cross_mgr = VkMemoryManager {
-            mem_type: MemoryType::Cross,
-            mem_type_idx: cross_mem_type_idx,
-            should_map: true,
-            min_vk_mem_size: MIN_CROSS_VK_MEM_SIZE,
-            vk_mems: vec![]
-        };
-
         Ok(Self {
             device_mgr,
-            host_mgr,
-            cross_mgr
+            host_mgr
         })
     }
 
@@ -283,8 +284,7 @@ impl VkAllocator {
     ) -> Result<MemoryBlock> {
         let mgr = match mem_type {
             MemoryType::Device => &mut self.device_mgr,
-            MemoryType::Host => &mut self.host_mgr,
-            MemoryType::Cross => &mut self.cross_mgr
+            MemoryType::Host => &mut self.host_mgr
         };
 
         // Check if the allocation is valid for the memory type
@@ -300,9 +300,13 @@ impl VkAllocator {
         let mgr = match block.source.mem_type {
             MemoryType::Device => &mut self.device_mgr,
             MemoryType::Host => &mut self.host_mgr,
-            MemoryType::Cross => &mut self.cross_mgr
         };
 
         mgr.free(block)
+    }
+
+    pub fn destroy(self, device: &DeviceLoader) {
+        self.device_mgr.destroy(device);
+        self.host_mgr.destroy(device);
     }
 }
