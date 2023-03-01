@@ -6,6 +6,7 @@ mod phys_dev;
 mod device;
 mod frame_queue;
 mod cmd_buf;
+mod vma;
 
 use ash::{vk, Entry, Instance, Device};
 use anyhow::{Result, Context};
@@ -19,9 +20,11 @@ use phys_dev::pick_physical_device;
 use device::{create_device, DeviceExts};
 use frame_queue::FrameQueue;
 use cmd_buf::create_command_buffers;
+use vma::VmaAllocator;
 
 /// Container for the core vulkan objects and main interface for all vulkan functionality
 pub struct VkCore {
+    vma_alloc: VmaAllocator,
     cmd_bufs: Vec<vk::CommandBuffer>,
     cmd_pool: vk::CommandPool,
     frame_queue: FrameQueue,
@@ -54,7 +57,10 @@ impl VkCore {
 
         let (cmd_pool, cmd_bufs) = create_command_buffers(&device, &phys_dev_info, frame_queue.len())?;
 
+        let vma_alloc = VmaAllocator::new(&instance, phys_dev, &device)?;
+
         Ok(Self {
+            vma_alloc,
             cmd_bufs,
             cmd_pool,
             frame_queue,

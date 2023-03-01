@@ -14,3 +14,4 @@ Cargo.lock
 
 # Ignore submodules
 common/ffi_libs/VulkanMemoryAllocator/*
+common/ffi_libs/Vulkan-Headers/*

@@ -1,3 +1,6 @@
 [submodule "common/ffi_libs/VulkanMemoryAllocator"]
 	path = common/ffi_libs/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "common/ffi_libs/Vulkan-Headers"]
+	path = common/ffi_libs/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
