@@ -1,0 +1,90 @@
+#version 460
+
+// Specialization constants
+// These _must_ be overridden
+// Constant ID 0: Workgroup size
+layout(local_size_x_id = 0, local_size_y_id = 0) in;
+
+// Constant ID 1: Sample count
+// Actual number of samples is this value squared
+layout(constant_id = 1) const uint samples = 0;
+
+
+// Input shape elements
+layout(binding = 0, std430) readonly buffer Elements {
+    uint num_lines;
+    vec2 points[];
+} elems;
+
+// Output image
+layout(binding = 1, rgba32f) uniform writeonly image2D image;
+
+
+// Input elements accessor functions
+struct Line {
+    vec2 c_a;
+    vec2 c_b;
+};
+
+Line get_line(in uint index) {
+    Line line;
+    line.c_a = elems.points[index * 2];
+    line.c_b = elems.points[(index * 2) + 1];
+
+    return line;
+}
+
+
+// Line processing functions
+float sample_line(in vec2 point, in Line line) {
+    // Shift coordinates
+    line.c_a -= point;
+    line.c_b -= point;
+
+    bool one_above_one_below = sign(line.c_b.y) != sign(line.c_a.y);
+    bool one_towards_right = (line.c_b.x > 0.0) || (line.c_a.x > 0.0);
+
+    float slope = sign(line.c_b.y - line.c_a.y);
+
+    if(one_above_one_below && one_towards_right) {
+        return slope;
+    }
+    else {
+        return 0.0;
+    }
+}
+
+float proc_line(in vec2 pixel_coord, in Line line) {
+    float luma = 0.0;
+
+    // Sum each sample's contribution
+    float delta = 1.0 / samples;
+
+    for(uint i = 0; i < samples; i++) {
+        for(uint j = 0; j < samples; j++) {
+            vec2 sample_point = vec2(i, j) * delta + (delta / 2);
+            luma += sample_line(sample_point, line);
+        }
+    }
+
+    // Average the samples
+    luma /= samples * samples;
+
+    return luma;
+}
+
+
+void main() {
+    // This pixel's coordinates
+    vec2 pixel_coord = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.x + gl_LocalInvocationID);
+
+    // This pixel's brightness [0, 1]
+    float luma = 0.0;
+
+    // Process lines
+    for(uint i = 0; i < elems.num_lines; i++) {
+        luma += proc_line(pixel_coord, get_line(i));
+    }
+
+    imageStore(image, ivec2(pixel_coord), pixel * vec4(1.0));
+}
