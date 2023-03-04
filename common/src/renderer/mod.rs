@@ -17,7 +17,8 @@ pub struct RendererConfig<'a> {
 
 /// The nuke3d renderer
 pub struct Renderer {
-    _vk_core: VkCore
+    canvas_2d: Canvas2D,
+    vk_core: VkCore
 }
 
 impl Renderer {
@@ -25,6 +26,14 @@ impl Renderer {
         let vk_core = VkCore::setup(config, window)?;
         let canvas_2d = Canvas2D::new(&vk_core)?;
 
-        Ok(Self { _vk_core: vk_core })
+        Ok(Self {
+            canvas_2d,
+            vk_core
+        })
+    }
+
+    pub fn destroy(self) {
+        self.canvas_2d.destroy(&self.vk_core);
+        self.vk_core.destroy();
     }
 }

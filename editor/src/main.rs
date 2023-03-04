@@ -18,7 +18,7 @@ fn main() -> Result<()> {
         force_validation: cli_args.rend_validation
     };
 
-    let _renderer = Renderer::new(&renderer_config, window.as_ref())?;
+    let renderer = Renderer::new(&renderer_config, window.as_ref())?;
 
     window.set_visible(true);
 
@@ -29,6 +29,8 @@ fn main() -> Result<()> {
             break;
         }
     }
+
+    renderer.destroy();
 
     Ok(())
 }

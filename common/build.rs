@@ -53,7 +53,7 @@ fn main() {
         .allowlist_function("vma.*")
         .allowlist_function("PFN_vma.*")
         .allowlist_type("Vma.*")
-         .blocklist_type("Vk.*")
+        .blocklist_type("Vk.*")
         .blocklist_type("PFN_vk.*")
         .trust_clang_mangling(false)
         .layout_tests(false)

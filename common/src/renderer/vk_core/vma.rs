@@ -13,7 +13,7 @@ use anyhow::{Result, Context};
 
 mod ffi {
     use ash::vk::*;
-    include!(concat!(env!("OUT_DIR"), env!("PATH_SEPERATOR"), "/vma_ffi.rs"));
+    include!(concat!(env!("OUT_DIR"), env!("PATH_SEPERATOR"), "vma_ffi.rs"));
 }
 
 fn null_vk_fn() {
@@ -26,30 +26,94 @@ macro_rules! null_vk_fn {
     };
 }
 
-/// Memory allocation types
-pub enum AllocType {
-    Host,
-    Device
+/// Allocation info
+///
+/// Call atleast one of [`prefer_host()`](AllocInfo::prefer_host)
+/// or [`prefer_device()`](AllocInfo::prefer_device) before using
+pub struct AllocInfo(ffi::VmaAllocationCreateInfo);
+
+impl AllocInfo {
+    pub fn new() -> Self {
+        Self(ffi::VmaAllocationCreateInfo {
+            flags: 0,
+            usage: ffi::VmaMemoryUsage::VMA_MEMORY_USAGE_UNKNOWN,
+            requiredFlags: vk::MemoryPropertyFlags::empty(),
+            preferredFlags: vk::MemoryPropertyFlags::empty(),
+            memoryTypeBits: 0,
+            pool: unsafe { mem::zeroed() },
+            pUserData: ptr::null_mut(),
+            priority: 1.0
+        })
+    }
+
+    /// Set usage to `VMA_MEMORY_USAGE_AUTO_PREFER_HOST`
+    ///
+    /// Default usage is `VMA_MEMORY_USAGE_UNKNOWN`
+    pub fn prefer_host(mut self) -> Self {
+        self.0.usage = ffi::VmaMemoryUsage::VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        self
+    }
+
+    /// Set usage to `VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE`
+    ///
+    /// Default usage is `VMA_MEMORY_USAGE_UNKNOWN`
+    pub fn prefer_device(mut self) -> Self {
+        self.0.usage = ffi::VmaMemoryUsage::VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        self
+    }
+
+    /// Sets `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT` flag
+    pub fn dedicated(mut self) -> Self {
+        self.0.flags |= ffi::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT as u32;
+        self
+    }
+
+    /// Sets `VMA_ALLOCATION_CREATE_MAPPED_BIT` flag
+    pub fn mapped(mut self) -> Self {
+        self.0.flags |= ffi::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT as u32;
+        self
+    }
+
+    /// Sets `VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT` flag
+    pub fn sequential_access(mut self) -> Self {
+        self.0.flags |= ffi::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT as u32;
+        self
+    }
+
+    /// Sets `VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT` flag
+    pub fn random_access(mut self) -> Self {
+        self.0.flags |= ffi::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT as u32;
+        self
+    }
+
+    /// Sets `VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT` flag
+    pub fn allow_transfer_instead(mut self) -> Self {
+        self.0.flags |= ffi::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT as u32;
+        self
+    }
 }
 
 /// A vulkan buffer with memory allocated and bound to it
-pub struct BufferAlloc {
+pub struct VmaBuffer {
     buf: vk::Buffer,
     ptr: Option<NonNull<c_void>>,
     alloc: ffi::VmaAllocation
 }
 
-impl BufferAlloc {
+impl VmaBuffer {
     /// The underlying [`vk::Buffer`]
     pub fn buf(&self) -> vk::Buffer {
         self.buf
     }
+
+    /// A mapped pointer, may be `None` for unmapped memory
+    pub fn ptr(&self) -> Option<NonNull<c_void>> {
+        self.ptr
+    }
 }
 
 /// Vulkan Memory Allocator
-pub struct VmaAllocator {
-    vma_alloc: ffi::VmaAllocator
-}
+pub struct VmaAllocator(ffi::VmaAllocator);
 
 impl VmaAllocator {
     pub fn new(instance: &Instance, phys_dev: vk::PhysicalDevice, device: &Device) -> Result<Self> {
@@ -107,41 +171,20 @@ impl VmaAllocator {
             vma_alloc.assume_init()
         };
 
-        Ok(Self { vma_alloc })
+        Ok(Self(vma_alloc))
     }
 
-    pub fn create_buffer(&self, create_info: &vk::BufferCreateInfo, alloc_type: AllocType) -> Result<BufferAlloc> {
-        let mut flags = 0;
-
-        if let AllocType::Host = alloc_type {
-            flags |= ffi::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT as u32
-        }
-
-        let usage = match alloc_type {
-            AllocType::Host => ffi::VmaMemoryUsage::VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-            AllocType::Device => ffi::VmaMemoryUsage::VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
-        };
-
-        let alloc_info = ffi::VmaAllocationCreateInfo {
-            flags,
-            usage,
-            requiredFlags: vk::MemoryPropertyFlags::empty(),
-            preferredFlags: vk::MemoryPropertyFlags::empty(),
-            memoryTypeBits: 0,
-            pool: unsafe { mem::zeroed() },
-            pUserData: ptr::null_mut(),
-            priority: 1.0
-        };
-
-        let buf_alloc = unsafe {
+    /// Creates a buffer with memory bound and allocated to it
+    pub fn create_buffer(&self, create_info: &vk::BufferCreateInfo, alloc_info: &AllocInfo) -> Result<VmaBuffer> {
+        unsafe {
             let mut buf = MaybeUninit::uninit();
             let mut allocation = MaybeUninit::uninit();
             let mut allocation_info = MaybeUninit::uninit();
 
             ffi::vmaCreateBuffer(
-                self.vma_alloc,
+                self.0,
                 create_info,
-                &alloc_info,
+                &alloc_info.0,
                 buf.as_mut_ptr(),
                 allocation.as_mut_ptr(),
                 allocation_info.as_mut_ptr()
@@ -155,19 +198,20 @@ impl VmaAllocator {
 
             let ptr = NonNull::new(allocation_info.pMappedData as *mut c_void);
 
-            BufferAlloc {
+            Ok(VmaBuffer {
                 buf,
                 ptr,
                 alloc: allocation
-            }
-        };
-
-        Ok(buf_alloc)
+            })
+        }
     }
-}
 
-impl Drop for VmaAllocator {
-    fn drop(&mut self) {
-        unsafe { ffi::vmaDestroyAllocator(self.vma_alloc); }
+    /// Destroys a [`VmaBuffer`] and frees its memory
+    pub fn destroy_buffer(&self, buf: VmaBuffer) {
+        unsafe { ffi::vmaDestroyBuffer(self.0, buf.buf, buf.alloc) };
+    }
+
+    pub fn destroy(self) {
+        unsafe { ffi::vmaDestroyAllocator(self.0) };
     }
 }

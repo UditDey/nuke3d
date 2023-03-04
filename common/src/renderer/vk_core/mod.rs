@@ -7,6 +7,7 @@ mod device;
 mod frame_queue;
 mod cmd_buf;
 mod vma;
+mod buffer;
 
 use ash::{vk, Entry, Instance, Device};
 use anyhow::{Result, Context};
@@ -22,7 +23,9 @@ use frame_queue::FrameQueue;
 use cmd_buf::create_command_buffers;
 use vma::VmaAllocator;
 
-/// Container for the core vulkan objects and main interface for all vulkan functionality
+pub use buffer::TransferBuffer;
+
+/// Container for the core vulkan objects
 pub struct VkCore {
     vma_alloc: VmaAllocator,
     cmd_bufs: Vec<vk::CommandBuffer>,
@@ -74,15 +77,24 @@ impl VkCore {
         })
     }
 
-    /// Length of the frame queue (ie max frames in flight)
-    pub fn frame_queue_len(&self) -> usize {
-        self.frame_queue.len()
+    /// The vulkan [`Device`]
+    pub fn device(&self) -> &Device {
+        &self.device
     }
-}
 
-impl Drop for VkCore {
-    fn drop(&mut self) {
+    /// The vulkan memory allocator
+    pub fn vma_alloc(&self) -> &VmaAllocator {
+        &self.vma_alloc
+    }
+
+    /// The [`FrameQueue`]
+    pub fn frame_queue(&self) -> &FrameQueue {
+        &self.frame_queue
+    }
+
+    pub fn destroy(self) {
         unsafe {
+            self.vma_alloc.destroy();
             self.device.destroy_command_pool(self.cmd_pool, None);
             self.frame_queue.destroy(&self.device, &self.device_exts);
             self.device.destroy_device(None);

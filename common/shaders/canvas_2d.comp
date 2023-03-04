@@ -1,0 +1,85 @@
+#version 460
+
+// Specialization constants
+// These _must_ be overridden
+// Constant ID 0: Workgroup size
+layout(local_size_x_id = 0, local_size_y_id = 0) in;
+
+// Constant ID 1: Sample count
+// Actual number of samples is this value squared, max value is 5
+layout(constant_id = 1) const uint num_samples = 0;
+
+
+// Input shape elements metadata
+layout(push_constant) uniform readonly Metadata {
+    uint num_lines;
+} metadata;
+
+layout(binding = 0, std430) readonly buffer LinesBuffer {
+    vec2 points[];
+} lines_buf;
+
+// Output image
+layout(binding = 1, rgba32f) uniform writeonly image2D image;
+
+// This pixel's sample bitmap
+uint samples = 0;
+
+
+// Input shape elements accessor functions
+struct Line {
+    vec2 c_a;
+    vec2 c_b;
+};
+
+Line get_line(in uint index) {
+    Line line;
+    line.c_a = lines_buf.points[index * 2];
+    line.c_b = lines_buf.points[(index * 2) + 1];
+
+    return line;
+}
+
+
+// Process a line's contribution
+void proc_line(in vec2 pixel_coord, in Line line) {
+    float delta = 1.0 / num_samples;
+    uint mask = 1 << 0;
+
+    for(uint i = 0; i < num_samples; i++) {
+        for(uint j = 0; j < num_samples; j++) {
+            vec2 sample_point = pixel_coord + vec2(i, j) * delta;
+
+            Line shifted_line;
+            shifted_line.c_a = line.c_a - sample_point;
+            shifted_line.c_b = line.c_b - sample_point;
+
+            bool one_above_one_below = sign(shifted_line.c_b.y) != sign(shifted_line.c_a.y);
+            bool one_towards_right = (shifted_line.c_b.x > 0.0) || (shifted_line.c_a.x > 0.0);
+
+            if(one_above_one_below && one_towards_right) {
+                samples ^= mask;
+            }
+
+            mask <<= 1;
+        }
+
+        mask <<= 1;
+    }
+}
+
+
+void main() {
+    // This pixel's coordinates
+    vec2 pixel_coord = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.x + gl_LocalInvocationID.xy);
+
+    // Process lines
+    for(uint i = 0; i < metadata.num_lines; i++) {
+        proc_line(pixel_coord, get_line(i));
+    }
+
+    // Calculate the pixel's luma
+    float luma = bitCount(samples) / (num_samples * num_samples);
+
+    imageStore(image, ivec2(pixel_coord), luma * vec4(1.0));
+}

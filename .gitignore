@@ -15,3 +15,6 @@ Cargo.lock
 # Ignore submodules
 common/ffi_libs/VulkanMemoryAllocator/*
 common/ffi_libs/Vulkan-Headers/*
+
+# Ignore built shaders
+common/shaders/*.spv

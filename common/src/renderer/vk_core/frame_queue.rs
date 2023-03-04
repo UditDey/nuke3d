@@ -71,7 +71,7 @@ impl SyncSet {
 /// Objects associated with an acquired frame
 pub struct FrameInfo<'a> {
     idx: usize,
-    swap_image: vk::Image,
+    swap_image_view: vk::ImageView,
     sync_set: &'a SyncSet
 }
 
@@ -81,9 +81,9 @@ impl<'a> FrameInfo<'a> {
         self.idx
     }
 
-    /// The swapchain image to render to in this frame
-    pub fn swap_image(&self) -> vk::Image {
-        self.swap_image
+    /// The swapchain image view to render to in this frame
+    pub fn swap_image_view(&self) -> vk::ImageView {
+        self.swap_image_view
     }
 
     /// The sync set for this frame
@@ -95,7 +95,7 @@ impl<'a> FrameInfo<'a> {
 /// An abstraction over [`vk::SwapchainKHR`] that integrates synchronisation as well
 pub struct FrameQueue {
     swapchain: vk::SwapchainKHR,
-    swap_images: Vec<vk::Image>,
+    swap_image_views: Vec<vk::ImageView>,
     sync_sets: Vec<SyncSet>,
     frame_idx: usize
 }
@@ -155,7 +155,7 @@ impl FrameQueue {
             .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
             .image_extent(swap_image_extent)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(capab.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -177,6 +177,33 @@ impl FrameQueue {
                 .context("Failed to get swapchain images")?
         };
 
+        // Create swapchain image views
+        let swap_image_views = swap_images
+            .iter()
+            .map(|&image| unsafe {
+                let create_info = vk::ImageViewCreateInfo::builder()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(SURFACE_FORMAT)
+                    .components(vk::ComponentMapping {
+                        r: vk::ComponentSwizzle::IDENTITY,
+                        g: vk::ComponentSwizzle::IDENTITY,
+                        b: vk::ComponentSwizzle::IDENTITY,
+                        a: vk::ComponentSwizzle::IDENTITY,
+                    })
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1
+                    });
+
+                device.create_image_view(&create_info, None)
+            })
+            .collect::<Result<Vec<vk::ImageView>, vk::Result>>()
+            .context("Failed to create swap image views")?;
+
         let queue_len = swap_images.len();
 
         // Create sync sets
@@ -187,15 +214,20 @@ impl FrameQueue {
 
         Ok(Self {
             swapchain,
-            swap_images,
+            swap_image_views,
             sync_sets,
             frame_idx: 0
         })
     }
 
-    /// The length of the frame queue (ie number of swapchain images)
+    /// The length of the frame queue (ie number of swapchain images, ie frames in flight)
     pub fn len(&self) -> usize {
-        self.swap_images.len()
+        self.swap_image_views.len()
+    }
+
+    /// Get the swapchain image views
+    pub fn swap_image_views(&self) -> &[vk::ImageView] {
+        &self.swap_image_views
     }
 
     /// Acquire a new frame to render
@@ -233,7 +265,7 @@ impl FrameQueue {
 
         let frame_info = FrameInfo {
             idx: self.frame_idx,
-            swap_image: self.swap_images[self.frame_idx],
+            swap_image_view: self.swap_image_views[self.frame_idx],
             sync_set
         };
 
@@ -242,11 +274,15 @@ impl FrameQueue {
         Ok(frame_info)
     }
 
-    pub fn destroy(&self, device: &Device, device_exts: &DeviceExts) {
+    pub fn destroy(self, device: &Device, device_exts: &DeviceExts) {
         unsafe {
             device_exts.swapchain_ext().destroy_swapchain(self.swapchain, None);
 
-            for set in &self.sync_sets {
+            for view in self.swap_image_views {
+                device.destroy_image_view(view, None);
+            }
+
+            for set in self.sync_sets {
                 set.destroy(device);
             }
         }
