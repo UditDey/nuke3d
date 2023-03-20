@@ -6,8 +6,7 @@ mod canvas_2d;
 use ash::{Entry, Instance, Device, vk};
 use anyhow::{Result, Context};
 
-use crate::window::Window;
-use crate::math::Vec2;
+use crate::{window::Window, math::Vec2};
 
 use vk_util::{
     instance::{create_instance, InstanceExts},
@@ -76,6 +75,9 @@ impl Renderer {
         let vma_alloc = VmaAllocator::new(&instance, phys_dev, &device)?;
         
         let canvas_2d_sys = Canvas2DSystem::new(&device, &frame_queue, &vma_alloc, frames_in_flight)?;
+        
+        println!("Number of swapchain images: {}", frame_queue.swap_image_views().len());
+        println!("Frames in flight: {frames_in_flight}");
 
         Ok(Self {
             _entry: entry,
@@ -111,8 +113,8 @@ impl Renderer {
     
             // Transition swapchain image layout from UNDEFINED to GENERAL
             let barrier = vk::ImageMemoryBarrier::builder()
-                .src_access_mask(vk::AccessFlags::NONE)
-                .dst_access_mask(vk::AccessFlags::MEMORY_WRITE)
+                .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags::MEMORY_READ)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -176,7 +178,7 @@ impl Renderer {
                 
             self.device.cmd_pipeline_barrier(
                 cmd_buf,
-                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::ALL_COMMANDS,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -191,7 +193,7 @@ impl Renderer {
                 
             // Submit command buffer
             let wait_semaphores = [frame_info.sync_set().swap_image_avail()];
-            let wait_stages = [vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+            let wait_stages = [vk::PipelineStageFlags::COMPUTE_SHADER];
             
             let cmd_bufs = [cmd_buf];
             let signal_semaphores = [frame_info.sync_set().cmd_buf_done()];

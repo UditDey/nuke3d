@@ -294,7 +294,7 @@ impl FrameQueue {
                 swap_image_idx: swap_image_idx as usize,
                 swapchain: self.swapchain,
                 sync_set,
-                swap_image: self.swap_images[self.frame_idx],
+                swap_image: self.swap_images[swap_image_idx as usize],
                 swap_image_extent: &self.swap_image_extent
             };
             
