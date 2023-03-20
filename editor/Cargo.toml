@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 common = { path = "../common" }
 argh = "0.1.9"
+parking_lot = "0.12.1"

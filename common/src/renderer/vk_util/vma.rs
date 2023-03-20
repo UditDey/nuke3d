@@ -115,6 +115,8 @@ impl VmaBuffer {
 /// Vulkan Memory Allocator
 pub struct VmaAllocator(ffi::VmaAllocator);
 
+unsafe impl Send for VmaAllocator {}
+
 impl VmaAllocator {
     pub fn new(instance: &Instance, phys_dev: vk::PhysicalDevice, device: &Device) -> Result<Self> {
         // Create allocator

@@ -7,7 +7,7 @@ use super::phys_dev::PhysicalDeviceInfo;
 pub fn create_command_buffers(
     device: &Device,
     phys_dev_info: &PhysicalDeviceInfo,
-    count: usize
+    count: u32
 ) -> Result<(vk::CommandPool, Vec<vk::CommandBuffer>)> {
     // Create command pool
     let create_info = vk::CommandPoolCreateInfo::builder()
@@ -21,7 +21,7 @@ pub fn create_command_buffers(
     let alloc_info = vk::CommandBufferAllocateInfo::builder()
         .command_pool(cmd_pool)
         .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(count as u32);
+        .command_buffer_count(count);
 
     let cmd_bufs = unsafe { device.allocate_command_buffers(&alloc_info) }
         .context("Failed to allocate command buffer")?;

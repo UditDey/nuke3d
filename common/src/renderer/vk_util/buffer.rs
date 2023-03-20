@@ -3,9 +3,11 @@ use std::ffi;
 use ash::{vk, Device};
 use anyhow::{bail, Result, Context};
 
-use super::{VkCore, vma::{AllocInfo, VmaBuffer}};
+use super::vma::{VmaAllocator, AllocInfo, VmaBuffer};
 
 /// Tool for transferring data from host to device
+///
+/// This may allocate in uncached memory, so writes to this must be sequential
 pub struct TransferBuffer {
     staging_buf: Option<VmaBuffer>,
     dest_buf: VmaBuffer,
@@ -13,9 +15,11 @@ pub struct TransferBuffer {
     size: u64
 }
 
+unsafe impl Send for TransferBuffer {}
+
 impl TransferBuffer {
     /// Note: `create_info` must have [`vk::BufferUsageFlags::TRANSFER_DST`] flag set
-    pub fn new(vk_core: &VkCore, create_info: &vk::BufferCreateInfo) -> Result<Self> {
+    pub fn new(vma_alloc: &VmaAllocator, create_info: &vk::BufferCreateInfo) -> Result<Self> {
         if !create_info.usage.contains(vk::BufferUsageFlags::TRANSFER_DST) {
             bail!("TRANSFER_DST flag not set");
         }
@@ -27,8 +31,7 @@ impl TransferBuffer {
             .sequential_access()
             .allow_transfer_instead();
 
-        let dest_buf = vk_core
-            .vma_alloc()
+        let dest_buf = vma_alloc
             .create_buffer(create_info, &alloc_info)
             .context("Failed to create target buffer")?;
 
@@ -43,8 +46,7 @@ impl TransferBuffer {
                 .usage(vk::BufferUsageFlags::TRANSFER_SRC)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-            let staging_buf = vk_core
-                .vma_alloc()
+            let staging_buf = vma_alloc
                 .create_buffer(&staging_create_info, &alloc_info)
                 .context("Failed to create staging buffer")?;
 
@@ -102,11 +104,11 @@ impl TransferBuffer {
         }
     }
 
-    pub fn destroy(self, vk_core: &VkCore) {
-        vk_core.vma_alloc().destroy_buffer(self.dest_buf);
+    pub fn destroy(self, vma_alloc: &VmaAllocator) {
+        vma_alloc.destroy_buffer(self.dest_buf);
 
         if let Some(staging_buf) = self.staging_buf {
-            vk_core.vma_alloc().destroy_buffer(staging_buf);
+            vma_alloc.destroy_buffer(staging_buf);
         }
     }
 }

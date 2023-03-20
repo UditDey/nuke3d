@@ -9,5 +9,9 @@ pub struct CliArgs {
 
     /// force vulkan validation layers
     #[argh(switch)]
-    pub rend_validation: bool
+    pub rend_validation: bool,
+    
+    /// override number of frames in flight
+    #[argh(option)]
+    pub rend_frames_in_flight: Option<u32>
 }
