@@ -1,82 +1,172 @@
 #version 460
 
-// Specialization constants, these _must_ be overridden
-// Constant ID 0: Workgroup size
-layout(local_size_x_id = 0, local_size_y_id = 0) in;
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+#extension GL_EXT_shader_16bit_storage : enable
 
-// Constant ID 1: Sample count
-// Actual number of samples is this value squared, max value is 5
-layout(constant_id = 1) const uint NUM_SAMPLES = 0;
+// Command types:
+// 1) Start fill contour:
+//    opcode = 0
+//    param1 = starting point
+//    param2 = color
+//
+// 2) Start stroke contour:
+//    opcode = 1
+//    param1 = starting point
+//    param2 = color
+//    param3.x = width
+//
+// 3) Line to:
+//    opcode = 2
+//    param1 = point to draw line to
+//
+// 4) End contour:
+//    opcode = 3
+//
+// 5) Last command:
+//    opcode = 4
+#define OP_START_FILL 0
+#define OP_START_STROKE 1
+#define OP_LINE_TO 2
+#define OP_END_CONT 3
+#define OP_LAST_CMD 4
 
-// Constant ID 2: Size of boundary element buffers in bytes
-layout(constant_id = 2) const uint BOUNDARY_ELEM_BUF_SIZE = 0;
-
-// Boundary element definitions
-struct Line {
-    vec2 c_a;
-    vec2 c_b;
+struct CanvasCommand {
+    uint opcode;
+    u16vec2 param1;
+    u16vec2 param2;
+    u16vec2 param3;
 };
 
-const uint SIZE_OF_LINE = 16;
+#define MODE_FILL true
+#define MODE_STROKE false
+#define INIT_MIN_DIST 999999.0
 
-// Shader inputs/outputs
-// Boundary elements metadata
-layout(push_constant) uniform readonly Metadata {
-    uint num_lines;
-} metadata;
+struct PixelState {
+    vec2 cursor;
+    vec4 color;
+    vec4 drawColor;
+    bool mode;
+    int windingNum;
+    float strokeWidth;
+    float minDist;
+};
 
-// Line elements
-layout(set = 0, binding = 0) uniform readonly LinesBuffer {
-    Line lines[BOUNDARY_ELEM_BUF_SIZE / SIZE_OF_LINE];
-} lines_buf;
+// List of canvas draw commands
+layout(set = 0, binding = 0) uniform CanvasCmdList {
+    CanvasCommand cmds[1000];
+} cmdList;
 
 // Output image
-layout(set = 1, binding = 0, rgba32f) uniform writeonly image2D image;
+layout(set = 1, binding = 0, rgba32f) uniform image2D outImage;
 
-// This pixel's coordinates
-vec2 pixel_coord = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.x + gl_LocalInvocationID.xy);
+// Workgroup size, set by specialization constant ID: 0
+layout(local_size_x_id = 0, local_size_y_id = 0) in;
 
-// This pixel's sample bitmap
-uint samples = 0;
-
-// Process a line's contribution
-void proc_line(in Line line) {
-    float delta = 1.0 / float(NUM_SAMPLES);
-    uint mask = 1 << 1;
-
-    vec2 sample_point = pixel_coord;
-
-    for(uint i = 0; i < NUM_SAMPLES; i++) {
-        for(uint j = 0; j < NUM_SAMPLES; j++) {
-            Line trans_line;
-            trans_line.c_a = line.c_a - sample_point;
-            trans_line.c_b = line.c_b - sample_point;
-
-            float t = trans_line.c_a.y / (trans_line.c_a.y - trans_line.c_b.y);
-            float s = (1 - t) * trans_line.c_a.x + t * trans_line.c_b.x;
-
-            if(s > 0.0 && t > 0.0 && t < 1.0) {
-                samples ^= mask;
-            }
-
-            mask <<= 1;
-            sample_point.x += delta;
-        }
-
-        mask <<= 1;
-        sample_point.x = pixel_coord.x;
-        sample_point.y += delta;
-    }
+// Unpacks a color from a u16vec2 param
+vec4 unpackColor(u16vec2 param) {
+    vec4 color;
+    color.r = float(param.x & 0xFF);
+    color.g = float(param.x >> 8);
+    color.b = float(param.y & 0xFF);
+    color.a = float(param.y >> 8);
+    
+    return color / 255.0;
 }
 
-void main() {    
-    // Process lines
-    for(uint i = 0; i < metadata.num_lines; i++) {
-        proc_line(lines_buf.lines[i]);
+bool inRange(float p, float a, float b) {
+    float min = min(a, b);
+    float max = max(a, b);
+    
+    return p >= min && p < max;
+}
+
+float lineDist(vec2 p, vec2 a, vec2 b) {
+    vec2 ba = b - a;
+    vec2 pa = p - a;
+    
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    
+	return length(pa - h * ba);
+}
+
+bool lineWindingDirection(vec2 p, vec2 a, vec2 b) {
+    vec2 ba = b - a;
+    vec2 pa = p - a;
+    
+    return ba.x * pa.y > ba.y * pa.x;
+}
+
+void main() {
+    // This pixel's coordinates
+    vec2 pixelCoord = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.x + gl_LocalInvocationID.xy);
+    
+    // This pixel's state
+    PixelState state;
+    state.color = vec4(0.0, 0.0, 0.0, 1.0);
+    
+    // Process each command
+    for(uint i = 0;; i++) {
+        CanvasCommand cmd = cmdList.cmds[i];
+        
+        // Start a fill contour
+        if(cmd.opcode == OP_START_FILL) {
+            state.mode = MODE_FILL;
+            state.cursor = vec2(cmd.param1);
+            state.drawColor = unpackColor(cmd.param2);
+            state.windingNum = 0;
+            state.minDist = INIT_MIN_DIST;
+        }
+        
+        // Start a stroke contour
+        else if(cmd.opcode == OP_START_STROKE) {
+            state.mode = MODE_STROKE;
+            state.cursor = vec2(cmd.param1);
+            state.drawColor = unpackColor(cmd.param2);
+            state.strokeWidth = float(cmd.param3.x);
+            state.minDist = INIT_MIN_DIST;
+        }
+        
+        // Process a line
+        else if(cmd.opcode == OP_LINE_TO) {
+            vec2 lineStart = state.cursor;
+            vec2 lineEnd = vec2(cmd.param1);
+            
+            if(state.mode == MODE_FILL) {
+                if(inRange(pixelCoord.y, lineStart.y, lineEnd.y)) {
+                    state.windingNum += lineWindingDirection(pixelCoord, lineStart, lineEnd) ? 1 : -1;
+                }
+            }
+            
+            state.minDist = min(state.minDist, lineDist(pixelCoord, lineStart, lineEnd));
+            state.cursor = lineEnd;
+        }
+        
+        // End of contour, blend the draw color with the pixel color
+        else if(cmd.opcode == OP_END_CONT) {
+            float coverage = 0.0;
+            
+            if(state.mode == MODE_FILL) {
+                if(state.windingNum != 0) {
+                    coverage = 1.0;
+                }
+                else {
+                    coverage = 1.0 - smoothstep(0.0, 1.0, state.minDist);
+                }
+            }
+            else {
+                coverage = 1.0 - smoothstep(state.strokeWidth - 1.0, state.strokeWidth, state.minDist);
+            }
+            
+            float alpha = state.drawColor.a * coverage;
+            state.color = normalize(state.drawColor * alpha + state.color * (1 - alpha));
+        }
+        
+        // Last command, break out of the loop
+        else if(cmd.opcode == OP_LAST_CMD) {
+            break;
+        }
     }
-
-    // Calculate the pixel's luma
-    float luma = float(bitCount(samples)) / float((NUM_SAMPLES * NUM_SAMPLES));
-
-    imageStore(image, ivec2(pixel_coord), luma * vec4(1.0));
+    
+    // Write the pixel color
+    imageStore(outImage, ivec2(pixelCoord), state.color);
 }

@@ -5,7 +5,8 @@ use anyhow::{bail, Result, Context};
 
 use crate::window::{Window, SurfaceCreateInfo};
 
-const VK_VERSION: u32 = vk::make_api_version(0, 1, 0, 0);
+/// The vulkan API version to be used
+const VK_VERSION: u32 = vk::make_api_version(0, 1, 2, 0);
 
 /// The platform specific surface extension functions
 pub enum PlatformSurfaceExt {

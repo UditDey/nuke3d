@@ -18,11 +18,10 @@ fn main() {
     build.include(&vk_header_include_path);
 
     // Defines
-    #[cfg(not(debug_assertions))]
     build.define("NDEBUG", "");
-
     build.define("VMA_STATIC_VULKAN_FUNCTIONS", "0");
     build.define("VMA_DYNAMIC_VULKAN_FUNCTIONS", "0");
+    build.define("VMA_STATS_STRING_ENABLED", "0");
     build.define("VMA_IMPLEMENTATION", "");
 
     // cpp files

@@ -5,4 +5,3 @@ pub use anyhow;
 
 pub mod window;
 pub mod renderer;
-pub mod math;

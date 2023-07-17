@@ -59,7 +59,7 @@ pub trait Window {
     /// Blocks the thread till a new window event is recieved
     fn next_event(&self) -> WindowEvent;
 
-    /// Returns a vulkan ___SurfaceCreateInfoKHR struct to create a
+    /// Returns a vulkan XXXSurfaceCreateInfoKHR struct to create a
     /// surface for this window
     fn surface_create_info(&self) -> &SurfaceCreateInfo;
 }

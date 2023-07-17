@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::ffi::{self, CStr};
 
 use ash::{vk, extensions::khr, Instance};
@@ -16,29 +15,18 @@ pub const DEVICE_EXTS: [*const ffi::c_char; 2] = [
 /// Information associated with a physical device
 pub struct PhysicalDeviceInfo {
     gfx_queue_family: u32,
-    props: vk::PhysicalDeviceProperties,
-    mem_props: vk::PhysicalDeviceMemoryProperties
+    name: String
 }
 
 impl PhysicalDeviceInfo {
-    /// Queue family index supporting graphics queues.
+    /// Queue family index supporting graphics queues
     pub fn gfx_queue_family(&self) -> u32 {
         self.gfx_queue_family
     }
 
-    /// The [`vk::PhysicalDeviceProperties`] of the physical device.
-    pub fn props(&self) -> &vk::PhysicalDeviceProperties {
-        &self.props
-    }
-
-    /// The [`vk::PhysicalDeviceMemoryProperties`] of the physical device.
-    pub fn mem_props(&self) -> &vk::PhysicalDeviceMemoryProperties {
-        &self.mem_props
-    }
-
-    /// The name of the physical device.
-    pub fn device_name(&self) -> Cow<str> {
-        unsafe { CStr::from_ptr(self.props.device_name.as_ptr()).to_string_lossy() }
+    /// The name of the physical device
+    pub fn device_name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -147,13 +135,15 @@ pub fn pick_physical_device(
 
     match chosen_dev {
         Some(chosen_dev) => {
-            // Get device memory properties
-            let mem_props = unsafe { instance.get_physical_device_memory_properties(chosen_dev.phys_dev) };
-
+            let name = unsafe {
+                CStr::from_ptr(chosen_dev.props.device_name.as_ptr())
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            
             let phys_dev_info = PhysicalDeviceInfo {
                 gfx_queue_family: chosen_dev.gfx_queue_family,
-                props: chosen_dev.props,
-                mem_props
+                name
             };
 
             Ok((chosen_dev.phys_dev, phys_dev_info))
